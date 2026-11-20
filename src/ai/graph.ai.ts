@@ -1,4 +1,4 @@
-import {StateGraph, StateSchema, type GraphNode} from "@langchain/langgraph"
+import {StateGraph, StateSchema, START, END, type GraphNode, type CompiledStateGraph} from "@langchain/langgraph"
 import z from "zod"
 import { mistralModel, cohereModel, geminiModel } from "./model.ai.js"
 import { createAgent, HumanMessage, providerStrategy } from "langchain"
@@ -75,3 +75,24 @@ const judgeNode: GraphNode<typeof state> = async(state)=>{
         }
     }
 }
+
+/**
+ * .addNode-> create nodes
+ * .addEdge-> make connection between nodes
+ */
+const graph = new StateGraph(state)
+    .addNode("solution",solutionNode)
+    .addNode("judge_node",judgeNode)
+    .addEdge(START, "solution")
+    .addEdge("solution","judge_node")
+    .addEdge("judge_node",END)
+    .compile() // graph banane ke baad usko compile krna padta hai verna use nhi kr payenge
+
+export default async function runGraph(problem:string){
+    
+    const result = await graph.invoke({
+        problem: problem // graph ko problem ke sath invoke krenege kyuki solutionNode ko problem hi chahiye
+    })
+
+    return result
+}    
