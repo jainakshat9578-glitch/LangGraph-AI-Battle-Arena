@@ -1,6 +1,6 @@
 import {StateGraph, StateSchema, START, END, type GraphNode, type CompiledStateGraph} from "@langchain/langgraph"
 import z from "zod"
-import { mistralModel, cohereModel, geminiModel } from "./model.ai.js"
+import { groqModel, cohereModel, geminiModel } from "./model.ai.js"
 import { createAgent, HumanMessage, providerStrategy } from "langchain"
 
 /**
@@ -22,13 +22,14 @@ const state = new StateSchema({
 
 const solutionNode: GraphNode< typeof state> = async(state)=>{
 
-    const [mistralResponse, cohereResponse] = await Promise.all([
-        mistralModel.invoke(state.problem),
+    //Promise.all() — dono models ko parallel run karwana.
+    const [groqResponse, cohereResponse] = await Promise.all([
+        groqModel.invoke(state.problem),
         cohereModel.invoke(state.problem)
     ])
 
     return {
-        solution_1: mistralResponse.text,
+        solution_1: groqResponse.text,
         solution_2: cohereResponse.text
     }
 }
