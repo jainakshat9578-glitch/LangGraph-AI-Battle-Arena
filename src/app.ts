@@ -9,12 +9,33 @@ app.use(cookieParser())
 
 app.use("/api/auth",authRoutes)
 
-app.get("/",async(req,res)=>{
-     
-    const result = await graph("write a code for factorial function in js")
+app.get("/", async (req, res) => {
+    console.log("Battle request received...");
 
-    res.json(result)
-})
+    try {
+        console.log("Starting AI Battle...");
+
+        const result = await graph(
+            "Write a code for finding prime number in Java"
+        );
+
+        console.log("AI Battle completed successfully!");
+
+        res.status(200).json({
+            success: true,
+            result
+        });
+
+    } catch (error) {
+        console.error("AI Battle failed:", error);
+
+        res.status(500).json({
+            success: false,
+            message: "AI Battle failed",
+            error: error instanceof Error ? error.message : "Unknown error"
+        });
+    }
+});
 
 
 export default app
