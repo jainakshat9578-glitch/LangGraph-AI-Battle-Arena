@@ -1,6 +1,7 @@
 import express from "express"
 import graph from "./ai/graph.ai.js"
 import authRoutes from "./routes/auth.routes.js"
+import chatRoutes from "./routes/chat.routes.js"
 import cookieParser from "cookie-parser"
 
 const app = express()
@@ -8,6 +9,7 @@ app.use(express.json())
 app.use(cookieParser())
 
 app.use("/api/auth",authRoutes)
+app.use("/api/chat",chatRoutes)
 
 app.get("/", async (req, res) => {
     console.log("Battle request received...");
@@ -16,7 +18,7 @@ app.get("/", async (req, res) => {
         console.log("Starting AI Battle...");
 
         const result = await graph(
-            "Write a code for finding prime number in Java"
+            "Write a code for finding prime number in JavaScript?"
         );
 
         console.log("AI Battle completed successfully!");

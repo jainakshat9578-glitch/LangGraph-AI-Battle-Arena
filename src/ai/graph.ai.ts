@@ -51,16 +51,21 @@ const state = new StateSchema({
 
 const solutionNode: GraphNode<typeof state> = async (state) => {
 
-    const invokeWithTimeout = async (
-        name: string,
-        request: () => Promise<any>
-    ) => {
+  const invokeWithTimeout = async (
+    name: string,
+    request: () => Promise<any>
+) => {
 
-        console.log(`${name} started...`);
+    const maxRetries = 1;
+
+    for (let attempt = 1; attempt <= maxRetries + 1; attempt++) {
+
+        console.log(`${name} started... Attempt ${attempt}`);
 
         let timeout: ReturnType<typeof setTimeout> | undefined;
 
         try {
+
             const response = await Promise.race([
                 request(),
 
@@ -71,13 +76,6 @@ const solutionNode: GraphNode<typeof state> = async (state) => {
                 })
             ]);
 
-/**
- Yahan do promises race kar rahe hain:
-1. Actual AI model ki API request.
-2. 30-second ka timer.
-Jo pehle settle hoga, Promise.race() uska result dega.
-*/
-
             console.log(`${name} completed successfully!`);
 
             return {
@@ -87,17 +85,24 @@ Jo pehle settle hoga, Promise.race() uska result dega.
 
         } catch (error) {
 
-            console.error(`${name} failed:`, error);
+            console.error(`${name} failed on attempt ${attempt}:`, error);
 
-            return {
-                status: "failed" as const,
-                solution: ""
-            };
+            if (attempt <= maxRetries) {
+                console.log(`Retrying ${name}...`);
+            }
 
         } finally {
+
             if (timeout) clearTimeout(timeout);
+
         }
+    }
+
+    return {
+        status: "failed" as const,
+        solution: ""
     };
+};
 
     const results = await Promise.allSettled([
 
@@ -105,7 +110,7 @@ Jo pehle settle hoga, Promise.race() uska result dega.
             "Groq",
             () => groqModel.invoke(state.problem)
         ),
-
+       
         invokeWithTimeout(
             "Cohere",
             () => cohereModel.invoke(state.problem)
