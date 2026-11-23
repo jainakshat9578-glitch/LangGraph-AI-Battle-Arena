@@ -1,7 +1,7 @@
 import {StateGraph, StateSchema, START, END, type GraphNode, type CompiledStateGraph} from "@langchain/langgraph"
 import z from "zod"
 import { groqModel, cohereModel, geminiModel, openRouterModel } from "./model.ai.js"
-import { createAgent, HumanMessage, providerStrategy } from "langchain"
+import { createAgent, HumanMessage, AIMessage, providerStrategy } from "langchain"
 
 /**
  * StateSchema->data jo nodes aapas me share kr rhe hai uss data ka format kya hoga voh isme define krte hai
@@ -11,6 +11,7 @@ import { createAgent, HumanMessage, providerStrategy } from "langchain"
 
 const state = new StateSchema({
     problem: z.string().default(""),
+    chatHistory: z.array(z.object({role: z.enum(["user", "assistant"]),content: z.string()})).default([]),
     solution_1: z.string().default(""),
     solution_2: z.string().default(""),
     solution_3: z.string().default(""),
@@ -104,21 +105,35 @@ const solutionNode: GraphNode<typeof state> = async (state) => {
     };
 };
 
+    const conversationMessages = [
+    ...state.chatHistory.map((msg) => {
+
+        if (msg.role === "user") {
+            return new HumanMessage(msg.content);
+        }
+
+        return new AIMessage(msg.content);
+
+    }),
+
+    new HumanMessage(state.problem)
+];
+
     const results = await Promise.allSettled([
 
         invokeWithTimeout(
             "Groq",
-            () => groqModel.invoke(state.problem)
+            () => groqModel.invoke(conversationMessages)
         ),
        
         invokeWithTimeout(
             "Cohere",
-            () => cohereModel.invoke(state.problem)
+            () => cohereModel.invoke(conversationMessages)
         ),
 
         invokeWithTimeout(
             "Nemotron",
-            () => openRouterModel.invoke(state.problem)
+            () => openRouterModel.invoke(conversationMessages)
         )
 
     ]);
@@ -219,6 +234,7 @@ const judgeNode: GraphNode<typeof state> = async (state) => {
 
     const {
         problem,
+        chatHistory,
         solution_1,
         solution_2,
         solution_3,
@@ -239,6 +255,10 @@ const judgeNode: GraphNode<typeof state> = async (state) => {
             judge_status: "unavailable"
         };
     }
+
+    const formattedHistory = chatHistory
+    .map((msg) => `${msg.role}: ${msg.content}`) // har message ko readable format me convert krdena!
+    .join("\n"); // saare messages ko newline se combine krta hai!
 
     try {
 
@@ -275,14 +295,18 @@ const judgeNode: GraphNode<typeof state> = async (state) => {
         const judgeResponse = await judge.invoke({
             messages: [
                 new HumanMessage(`
-                    Problem: ${problem}
+    Previous Conversation:
+    ${formattedHistory || "No previous conversation"}
 
-                    Solution 1: ${solution_1 || "Unavailable"}
-                    Solution 2: ${solution_2 || "Unavailable"}
-                    Solution 3: ${solution_3 || "Unavailable"}
+    Current Problem: ${problem}
 
-                    Evaluate the available solutions.
-                `)
+    Solution 1: ${solution_1 || "Unavailable"}
+    Solution 2: ${solution_2 || "Unavailable"}
+    Solution 3: ${solution_3 || "Unavailable"}
+
+    Evaluate the available solutions considering the previous
+    conversation wherever relevant.
+`)
             ]
         });
 
@@ -394,10 +418,16 @@ const graph = new StateGraph(state)
     .addEdge("winner_node", END)
     .compile() // graph banane ke baad usko compile krna padta hai verna use nhi kr payenge
 
-export default async function runGraph(problem:string){
+type ChatHistoryMessage = {
+    role: "user" | "assistant";
+    content: string;
+};
+
+export default async function runGraph(problem:string,chatHistory: ChatHistoryMessage[]=[]){
     
     const result = await graph.invoke({
-        problem: problem // graph ko problem ke sath invoke krenege kyuki solutionNode ko problem hi chahiye
+        problem, // graph ko problem ke sath invoke krenege kyuki solutionNode ko problem hi chahiye
+        chatHistory
     })
 
     return result
