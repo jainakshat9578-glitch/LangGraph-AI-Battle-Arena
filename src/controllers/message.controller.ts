@@ -14,7 +14,7 @@ export const sendMessageController = async (
     try {
 
         const userId = req.user?.userId;
-        const { message } = req.body;
+        const { message, selectedModels } = req.body;
         const conversationId = req.params.conversationId;
 
         if (typeof conversationId !== "string") {
@@ -38,6 +38,24 @@ export const sendMessageController = async (
                 message: "Message is required"
             });
         }
+
+        type SelectedModel = "groq" | "cohere" | "nemotron";
+
+        const allowedModels:SelectedModel[] = ["groq", "cohere", "nemotron"];
+
+              if (
+                  !Array.isArray(selectedModels) ||
+                  selectedModels.length !== 2 ||
+                  new Set(selectedModels).size !== 2 ||
+                  !selectedModels.every((model: unknown) =>
+                     allowedModels.some((allowedModel)=> allowedModel === model)
+                  )
+              ) {
+                  return res.status(400).json({
+                      success: false,
+                      message: "Please select exactly two different valid models."
+                  });
+              }
 
         const conversation = await chatModel.findOne({_id: conversationId,userId});
 
@@ -93,7 +111,7 @@ export const sendMessageController = async (
         });
 
         // Run AI Battle
-        const result = await graph(message.trim(), chatHistory);
+        const result = await graph(message.trim(),selectedModels,chatHistory);
 
         // Save complete AI Battle result in mongoDB
         const assistantMessage = await Message.create({

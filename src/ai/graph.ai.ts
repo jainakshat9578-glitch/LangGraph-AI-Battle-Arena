@@ -12,6 +12,7 @@ import { createAgent, HumanMessage, AIMessage, providerStrategy } from "langchai
 const state = new StateSchema({
     problem: z.string().default(""),
     chatHistory: z.array(z.object({role: z.enum(["user", "assistant"]),content: z.string()})).default([]),
+    selectedModels: z.array(z.enum(["groq","cohere","nemotron"])).length(2),
     solution_1: z.string().default(""),
     solution_2: z.string().default(""),
     solution_3: z.string().default(""),
@@ -19,18 +20,19 @@ const state = new StateSchema({
     solution_2_status: z.string().default("pending"),
     solution_3_status: z.string().default("pending"),
     judge: z.object({
-        solution_1_score: z.number().default(0),
-        solution_2_score: z.number().default(0),
-        solution_3_score: z.number().default(0),
-        solution_1_reasoning: z.string().default(""),
-        solution_2_reasoning: z.string().default(""),
-        solution_3_reasoning: z.string().default(""),
+        evaluations: z.array(
+            z.object({
+                modelId: z.enum(["groq","cohere","nemotron"]),
+                modelName: z.string(),
+                score: z.number(),
+                reasoning: z.string()            
+            })
+        ).default([])
     }),
     judge_status: z.string().default("pending"),
     winner: z.string().default("Not declared"),
     winner_score: z.number().default(0),
     winner_status: z.string().default("pending")
-
 })
 
 // const solutionNode: GraphNode< typeof state> = async(state)=>{
@@ -50,97 +52,77 @@ const state = new StateSchema({
 // }
 
 
+
 const solutionNode: GraphNode<typeof state> = async (state) => {
 
-  const invokeWithTimeout = async (
-    name: string,
-    request: () => Promise<any>
-) => {
+    const models = {
+        groq: {
+            name: "Groq",
+            model: groqModel
+        },
+        cohere: {
+            name: "Cohere",
+            model: cohereModel
+        },
+        nemotron: {
+            name: "Nemotron",
+            model: openRouterModel
+        }
+    };
 
-    const maxRetries = 1;
-
-    for (let attempt = 1; attempt <= maxRetries + 1; attempt++) {
-
-        console.log(`${name} started... Attempt ${attempt}`);
-
-        let timeout: ReturnType<typeof setTimeout> | undefined;
-
-        try {
-
-            const response = await Promise.race([
-                request(),
-
-                new Promise<never>((_, reject) => {
-                    timeout = setTimeout(() => {
-                        reject(new Error(`${name} timed out after 30 seconds`));
-                    }, 30000);
-                })
-            ]);
-
-            console.log(`${name} completed successfully!`);
-
-            return {
-                status: "success" as const,
-                solution: response.text
-            };
-
-        } catch (error) {
-
-            console.error(`${name} failed on attempt ${attempt}:`, error);
-
-            if (attempt <= maxRetries) {
-                console.log(`Retrying ${name}...`);
+    // Previous conversation + current question
+    const conversationMessages = [
+        ...state.chatHistory.map((msg) => {
+            if (msg.role === "user") {
+                return new HumanMessage(msg.content);
             }
 
-        } finally {
+            return new AIMessage(msg.content);
+        }),
+        new HumanMessage(state.problem)
+    ];
 
-            if (timeout) clearTimeout(timeout);
+    // Model execution with timeout and retry
+    const invokeWithTimeout = async (
+        name: string,
+        request: () => Promise<any>
+    ) => {
+        const maxRetries = 1;
 
-        }
-    }
+        for (let attempt = 1; attempt <= maxRetries + 1; attempt++) {
 
-    return {
-        status: "failed" as const,
-        solution: ""
-    };
-};
+            console.log(`${name} started... Attempt ${attempt}`);
 
-    const conversationMessages = [
-    ...state.chatHistory.map((msg) => {
+            let timeout: ReturnType<typeof setTimeout> | undefined;
 
-        if (msg.role === "user") {
-            return new HumanMessage(msg.content);
-        }
+            try {
+                const response = await Promise.race([
+                    request(),
 
-        return new AIMessage(msg.content);
+                    new Promise<never>((_, reject) => {
+                        timeout = setTimeout(() => {
+                            reject(new Error(`${name} timed out after 30 seconds`));
+                        }, 30000);
+                    })
+                ]);
 
-    }),
+                console.log(`${name} completed successfully!`);
 
-    new HumanMessage(state.problem)
-];
+                return {
+                    status: "success" as const,
+                    solution: response.text
+                };
 
-    const results = await Promise.allSettled([
+            } catch (error) {
+                console.error(`${name} failed on attempt ${attempt}:`, error);
 
-        invokeWithTimeout(
-            "Groq",
-            () => groqModel.invoke(conversationMessages)
-        ),
-       
-        invokeWithTimeout(
-            "Cohere",
-            () => cohereModel.invoke(conversationMessages)
-        ),
+                if (attempt <= maxRetries) {
+                    console.log(`Retrying ${name}...`);
+                }
 
-        invokeWithTimeout(
-            "Nemotron",
-            () => openRouterModel.invoke(conversationMessages)
-        )
-
-    ]);
-
-    const getResult = (result: typeof results[number]) => {
-        if (result.status === "fulfilled") {
-            return result.value;
+            } finally {
+                if (timeout) clearTimeout(timeout);
+            }
         }
 
         return {
@@ -149,18 +131,61 @@ const solutionNode: GraphNode<typeof state> = async (state) => {
         };
     };
 
-    const groq = getResult(results[0]);
-    const cohere = getResult(results[1]);
-    const nemotron = getResult(results[2]);
+    // Define result structure
+    type ModelId = keyof typeof models; // modelId only accept cohere,groq,nemotron
 
+    type ModelResult = {
+        status: "success" | "failed" | "not_selected";
+        solution: string;
+    };
+
+    const modelResults: Record<ModelId, ModelResult> = {
+        groq: {
+            status: "not_selected",
+            solution: ""
+        },
+        cohere: {
+            status: "not_selected",
+            solution: ""
+        },
+        nemotron: {
+            status: "not_selected",
+            solution: ""
+        }
+    };
+
+    // Execute only selected models
+    const selectedResults = await Promise.all(
+        state.selectedModels.map(async (modelId) => {
+
+            const selectedModel = models[modelId];
+
+            const result = await invokeWithTimeout(
+                selectedModel.name,
+                () => selectedModel.model.invoke(conversationMessages)
+            );
+
+            return {
+                modelId,
+                result
+            };
+        })
+    );
+
+    // Store results against their model IDs
+    selectedResults.forEach(({ modelId, result }) => {
+        modelResults[modelId] = result;
+    });
+
+    // Return results in existing graph format
     return {
-        solution_1: groq.solution,
-        solution_2: cohere.solution,
-        solution_3: nemotron.solution,
+        solution_1: modelResults.groq.solution,
+        solution_2: modelResults.cohere.solution,
+        solution_3: modelResults.nemotron.solution,
 
-        solution_1_status: groq.status,
-        solution_2_status: cohere.status,
-        solution_3_status: nemotron.status
+        solution_1_status: modelResults.groq.status,
+        solution_2_status: modelResults.cohere.status,
+        solution_3_status: modelResults.nemotron.status
     };
 };
 
@@ -235,6 +260,7 @@ const judgeNode: GraphNode<typeof state> = async (state) => {
     const {
         problem,
         chatHistory,
+        selectedModels,
         solution_1,
         solution_2,
         solution_3,
@@ -243,22 +269,60 @@ const judgeNode: GraphNode<typeof state> = async (state) => {
         solution_3_status
     } = state;
 
-    // Check whether at least one model generated a solution
-    const availableSolutions = [
-        solution_1_status === "success",
-        solution_2_status === "success",
-        solution_3_status === "success"
-    ];
-
-    if (!availableSolutions.some(Boolean)) {
-        return {
-            judge_status: "unavailable"
-        };
+    const modelSolutions = [
+    {
+        modelId: "groq" as const, //read-Only
+        modelName: "Groq",
+        solution: solution_1,
+        status: solution_1_status
+    },
+    {
+        modelId: "cohere" as const,
+        modelName: "Cohere",
+        solution: solution_2,
+        status: solution_2_status
+    },
+    {
+        modelId: "nemotron" as const,
+        modelName: "Nemotron",
+        solution: solution_3,
+        status: solution_3_status
     }
+];
+
+const successfulSolutions = modelSolutions.filter(
+    (item) =>
+        selectedModels.includes(item.modelId) &&
+        item.status === "success" &&
+        item.solution.trim() !== ""
+);
+
+    if (successfulSolutions.length === 0) {
+    return {
+        judge_status: "unavailable",
+        judge: { evaluations: [] }
+    };
+}
+
+if (successfulSolutions.length === 1) {
+    return {
+        judge_status: "skipped",
+        judge: { evaluations: [] }
+    };
+}
 
     const formattedHistory = chatHistory
-    .map((msg) => `${msg.role}: ${msg.content}`) // har message ko readable format me convert krdena!
-    .join("\n"); // saare messages ko newline se combine krta hai!
+        .map((msg) => `${msg.role}: ${msg.content}`)
+        .join("\n");
+
+    const formattedSolutions = successfulSolutions
+    .map((item, index) => `
+        Model ${index + 1}: ${item.modelName}
+        Model ID: ${item.modelId}
+        Solution:
+        ${item.solution}
+    `)
+    .join("\n\n"); // saare messages ko newline se combine krta hai!
 
     try {
 
@@ -266,46 +330,44 @@ const judgeNode: GraphNode<typeof state> = async (state) => {
             model: geminiModel,
 
             responseFormat: providerStrategy(z.object({
-                solution_1_score: z.number().min(0).max(10),
-                solution_2_score: z.number().min(0).max(10),
-                solution_3_score: z.number().min(0).max(10),
-
-                solution_1_reasoning: z.string(),
-                solution_2_reasoning: z.string(),
-                solution_3_reasoning: z.string()
+                evaluations: z.array(
+                    z.object({
+                        modelId: z.enum(["groq","cohere","nemotron"]),
+                        modelName: z.string(),
+                        score: z.number().min(0).max(10),
+                        reasoning: z.string()
+                    })
+                )
             })),
 
             systemPrompt: `You are an impartial AI judge.
+                Evaluate only the solutions provided in the user message.
 
-            Evaluate solutions based on:
-            1. Correctness
-            2. Code quality
-            3. Efficiency
-            4. Completeness
+                Evaluation criteria:
+                1. Correctness
+                2. Code quality
+                3. Efficiency
+                4. Completeness
 
-            Give each available solution an independent score between 0 and 10.
-
-            If a solution is unavailable, give it score 0
-            and explain that the model failed.
-
-            Provide clear reasoning for every score.
-            Do not favor any particular AI model.`
-        });
+                Rules:
+                - Give each solution an independent score between 0 and 10.
+                - Provide clear reasoning for every score.
+                - Do not invent models or solutions.
+                - Do not favor any particular AI provider.
+                - Return exactly one evaluation for each provided model.
+                - Use the exact modelId and modelName provided.`
+});
 
         const judgeResponse = await judge.invoke({
             messages: [
                 new HumanMessage(`
     Previous Conversation:
     ${formattedHistory || "No previous conversation"}
-
     Current Problem: ${problem}
-
-    Solution 1: ${solution_1 || "Unavailable"}
-    Solution 2: ${solution_2 || "Unavailable"}
-    Solution 3: ${solution_3 || "Unavailable"}
-
-    Evaluate the available solutions considering the previous
-    conversation wherever relevant.
+    Solutions to Evaluate:
+    ${formattedSolutions}
+    Evaluate all provided solutions considering the previous converstaion wherever relevant.
+    Return the exactly one evaluation for each provided model.
 `)
             ]
         });
@@ -320,64 +382,139 @@ const judgeNode: GraphNode<typeof state> = async (state) => {
         console.error("Gemini Judge failed:", error);
 
         return {
-            judge_status: "unavailable"
+            judge_status: "unavailable",
+            judge:{
+                evaluations: []
+            }
         };
     }
 };
 
+
 const winnerNode: GraphNode<typeof state> = async (state) => {
 
-    // Judge unavailable hai toh winner declare nahi kar sakte
-    if (state.judge_status !== "success") {
-        return {
-            winner: "Not declared",
-            winner_score: 0,
-            winner_status: "unavailable"
-        };
-    }
+    const {
+        judge,
+        judge_status,
+        solution_1_status,
+        solution_2_status,
+        solution_3_status
+    } = state;
 
-    const solutions = [
-        {
-            name: "Groq",
-            score: state.judge.solution_1_score,
-            status: state.solution_1_status
-        },
-        {
-            name: "Cohere",
-            score: state.judge.solution_2_score,
-            status: state.solution_2_status
-        },
-        {
-            name: "Nemotron",
-            score: state.judge.solution_3_score,
-            status: state.solution_3_status
-        }
+    // All model statuses with their IDs
+    const modelStatuses = [
+        { modelId: "groq", status: solution_1_status },
+        { modelId: "cohere", status: solution_2_status },
+        { modelId: "nemotron", status: solution_3_status }
     ];
 
-    // Failed models ko competition se remove karna
-    const validSolutions = solutions.filter(
-        (solution) => solution.status === "success"
+    //Find successfully completed models
+    const successfulModels = modelStatuses.filter(
+        (item) => item.status === "success"
     );
 
-    if (validSolutions.length === 0) {
+    if (successfulModels.length === 0) {
         return {
-            winner: "No valid solutions",
+            winner: "No winner",
             winner_score: 0,
             winner_status: "unavailable"
         };
     }
 
-    // Highest score find karna
-    const highestScore = Math.max(
-        ...validSolutions.map((solution) => solution.score)
+    // Only one model succeeded
+    // No need to call Gemini Judge
+    if (successfulModels.length === 1) {
+
+        const winningModel = successfulModels[0];
+
+        if (!winningModel) {
+            return {
+                winner: "No winner",
+                winner_score: 0,
+                winner_status: "unavailable"
+            };
+        }
+
+        const modelNames: Record<string, string> = {
+            groq: "Groq",
+            cohere: "Cohere",
+            nemotron: "Nemotron"
+        };
+
+        return {
+            winner: modelNames[winningModel.modelId] ?? "Unknown",
+            winner_score: 0,
+            winner_status: "success"
+        };
+    }
+
+    if (judge_status !== "success") {
+        return {
+            winner: "No winner",
+            winner_score: 0,
+            winner_status: "unavailable"
+        };
+    }
+
+    //Match evaluations with successful models
+    const validEvaluations = judge.evaluations.filter(
+        (evaluation) =>
+            successfulModels.some(
+                (model) => model.modelId === evaluation.modelId
+            )
+    );
+    //some()->Ye check karta hai ki successfulModels array mein kam se kam ek matching model ID hai ya nahi.
+
+    // Ensure we have valid evaluations
+    const uniqueEvaluations = validEvaluations.filter(
+        (evaluation, index, self) =>
+            self.findIndex(
+                (item) => item.modelId === evaluation.modelId
+            ) === index
     );
 
-    // Highest score wale models find karna
-    const winners = validSolutions.filter(
-        (solution) => solution.score === highestScore
-    );// .filter()->always return array!
+    //Check whether every successful model was evaluated
+if (uniqueEvaluations.length !== successfulModels.length) {
+    return {
+        winner: "No winner",
+        winner_score: 0,
+        winner_status: "unavailable"
+    };
+}    
 
-    // Tie condition
+    //Validate evaluation scores
+const hasInvalidScore = uniqueEvaluations.some(
+    (item) =>
+        !Number.isFinite(item.score) ||
+        item.score < 0 ||
+        item.score > 10
+);
+
+if (hasInvalidScore) {
+    return {
+        winner: "No winner",
+        winner_score: 0,
+        winner_status: "unavailable"
+    };
+}
+
+    if (uniqueEvaluations.length === 0) {
+        return {
+            winner: "No winner",
+            winner_score: 0,
+            winner_status: "unavailable"
+        };
+    }
+
+    const highestScore = Math.max(
+        ...uniqueEvaluations.map((item) => item.score)
+    );
+
+    const winners = uniqueEvaluations.filter(
+        (item) => item.score === highestScore
+    );
+
+    //Handle tie
     if (winners.length > 1) {
         return {
             winner: "Tie",
@@ -386,22 +523,24 @@ const winnerNode: GraphNode<typeof state> = async (state) => {
         };
     }
 
-    const winner = winners[0];
+    //Declare winner
+    const winningModel = winners[0];
 
-    if (!winner) {
-    return {
-        winner: "Not declared",
-        winner_score: 0,
-        winner_status: "unavailable"
-    };
-}
+    if (!winningModel) {
+        return {
+            winner: "No winner",
+            winner_score: 0,
+            winner_status: "unavailable"
+        };
+    }
 
     return {
-    winner: winner.name,
-    winner_score: winner.score,
-    winner_status: "success"
+        winner: winningModel.modelName,
+        winner_score: winningModel.score,
+        winner_status: "success"
     };
 };
+
 
 
 /**
@@ -423,11 +562,14 @@ type ChatHistoryMessage = {
     content: string;
 };
 
-export default async function runGraph(problem:string,chatHistory: ChatHistoryMessage[]=[]){
+type SelectedModel = "groq" | "cohere" | "nemotron";
+
+export default async function runGraph(problem:string,selectedModels: SelectedModel[],chatHistory: ChatHistoryMessage[]=[]){
     
     const result = await graph.invoke({
         problem, // graph ko problem ke sath invoke krenege kyuki solutionNode ko problem hi chahiye
-        chatHistory
+        chatHistory,
+        selectedModels
     })
 
     return result

@@ -18,7 +18,8 @@ app.get("/", async (req, res) => {
         console.log("Starting AI Battle...");
 
         const result = await graph(
-            "Write a code for finding prime number in JavaScript?"
+            "Write a code for finding prime number in JavaScript?",
+            ["groq","cohere"]
         );
 
         console.log("AI Battle completed successfully!");
